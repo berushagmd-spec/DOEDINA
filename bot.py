@@ -10,9 +10,11 @@ import html
 import json
 import logging
 import os
+import queue
 import re
 import signal
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -23,10 +25,12 @@ from urllib.request import Request, urlopen
 from character_generators import (
     generate_nelis,
     generate_romix,
+    generate_timur,
     nelis_combination_count,
     romix_combination_count,
+    timur_combination_count,
 )
-from image_generator import random_hex, render_character
+from image_generator import random_hex, render_character, render_timur_with_derd
 from name_generator import generate_name, raw_combination_count
 
 
@@ -35,6 +39,7 @@ CHARACTER_TITLES = {
     "derd": "🟥DERD GENERATOR 95🟥",
     "romix": "🟩ROMIX TATAR GENERATOR 95🟩",
     "nelis": "🟦DIMA NELIS GENERATOR 95🟦",
+    "timur": "🟨TIMUR BABAEV GENERATOR 95🟨",
 }
 ROOT = Path(__file__).resolve().parent
 COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s|$)")
@@ -138,6 +143,33 @@ class TelegramAPI:
         return payload.get("result")
 
 
+class GenerationCounter:
+    """Thread-safe persistent generation counter."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._value = self._load()
+
+    def _load(self) -> int:
+        try:
+            return max(0, int(self.path.read_text(encoding="utf-8").strip()))
+        except (FileNotFoundError, ValueError, OSError):
+            return 0
+
+    def next(self) -> int:
+        with self._lock:
+            self._value += 1
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.path.with_name(f".{self.path.name}.tmp")
+                temporary.write_text(str(self._value), encoding="utf-8")
+                temporary.replace(self.path)
+            except OSError as exc:
+                logging.warning("Could not persist generation counter: %s", exc)
+            return self._value
+
+
 def parse_command(text: str, bot_username: str) -> str | None:
     """Parse a command with optional @ThisBot suffix, case-insensitively."""
 
@@ -176,6 +208,8 @@ def send_character(
     api: TelegramAPI,
     message: dict[str, Any],
     character: str,
+    generation_counter: GenerationCounter | None = None,
+    log_channel: str | None = None,
 ) -> None:
     chat_id = message["chat"]["id"]
     action_fields = {
@@ -194,11 +228,20 @@ def send_character(
         name = " ".join(generate_romix())
     elif character == "nelis":
         name = " ".join(generate_nelis())
+    elif character == "timur":
+        name = " ".join(generate_timur())
     else:
         raise ValueError(f"Unknown character: {character}")
 
     color = random_hex()
-    photo = render_character(character, color).getvalue()
+    if character == "timur":
+        photo = render_timur_with_derd(color).getvalue()
+        filename = "timur.jpg"
+        content_type = "image/jpeg"
+    else:
+        photo = render_character(character, color).getvalue()
+        filename = f"{character}.png"
+        content_type = "image/png"
     caption = (
         f"<b>{CHARACTER_TITLES[character]}</b>\n\n"
         f"<b>Имя:</b> {html.escape(name)}\n"
@@ -217,9 +260,29 @@ def send_character(
     api.call(
         "sendPhoto",
         fields,
-        files={"photo": (f"{character}.png", photo, "image/png")},
+        files={"photo": (filename, photo, content_type)},
         timeout=45,
     )
+    if generation_counter is not None and log_channel:
+        generation_number = generation_counter.next()
+        try:
+            send_generation_log(
+                api,
+                log_channel,
+                name,
+                generation_number,
+                filename,
+                photo,
+                content_type,
+            )
+        except TelegramAPIError as exc:
+            logging.error(
+                "Could not send generation #%s to %s: %s",
+                generation_number,
+                log_channel,
+                exc,
+            )
+
     logging.info(
         "Generated %s (%s) in %s for chat %s",
         name,
@@ -229,11 +292,140 @@ def send_character(
     )
 
 
+def send_generation_log(
+    api: TelegramAPI,
+    log_channel: str,
+    name: str,
+    generation_number: int,
+    filename: str,
+    photo: bytes,
+    content_type: str,
+) -> None:
+    """Send one completed generation to the log channel with a strict caption."""
+
+    fields = {
+        "chat_id": log_channel,
+        "caption": f"{html.escape(name)}\n#{generation_number} генерация",
+        "parse_mode": "HTML",
+    }
+    last_error: TelegramAPIError | None = None
+    for attempt in range(3):
+        try:
+            api.call(
+                "sendPhoto",
+                fields,
+                files={"photo": (filename, photo, content_type)},
+                timeout=45,
+            )
+            return
+        except TelegramAPIError as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2**attempt)
+    assert last_error is not None
+    raise last_error
+
+
+class GenerationQueue:
+    """Single-worker FIFO queue that prevents concurrent image generation."""
+
+    def __init__(
+        self,
+        api: TelegramAPI,
+        generation_counter: GenerationCounter,
+        log_channel: str,
+        max_pending: int = 50,
+    ):
+        self.api = api
+        self.generation_counter = generation_counter
+        self.log_channel = log_channel
+        self.max_pending = max_pending
+        self._queue: queue.Queue[tuple[dict[str, Any], str] | None] = queue.Queue()
+        self._lock = threading.Lock()
+        self._pending = 0
+        self._worker = threading.Thread(
+            target=self._work,
+            name="generation-worker",
+            daemon=True,
+        )
+        self._worker.start()
+
+    @property
+    def pending(self) -> int:
+        with self._lock:
+            return self._pending
+
+    def enqueue(self, message: dict[str, Any], character: str) -> bool:
+        with self._lock:
+            if self._pending >= self.max_pending:
+                accepted = False
+                position = 0
+            else:
+                self._pending += 1
+                position = self._pending
+                accepted = True
+
+        if not accepted:
+            send_text(
+                self.api,
+                message,
+                "🚫 Очередь генераций заполнена. Попробуй чуть позже",
+            )
+            return False
+
+        self._queue.put((message, character))
+        if position > 1:
+            try:
+                send_text(
+                    self.api,
+                    message,
+                    f"⏳ Добавлено в очередь. Позиция: {position}",
+                )
+            except TelegramAPIError:
+                logging.debug("Could not send queue position", exc_info=True)
+        return True
+
+    def _work(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                self._queue.task_done()
+                return
+            message, character = item
+            try:
+                send_character(
+                    self.api,
+                    message,
+                    character,
+                    self.generation_counter,
+                    self.log_channel,
+                )
+            except Exception:
+                logging.exception("Queued %s generation failed", character)
+                try:
+                    send_text(
+                        self.api,
+                        message,
+                        "❌ Генерация сломалась. Попробуй ещё раз",
+                    )
+                except Exception:
+                    logging.debug("Could not report generation error", exc_info=True)
+            finally:
+                with self._lock:
+                    self._pending -= 1
+                self._queue.task_done()
+
+    def shutdown(self) -> None:
+        self._queue.put(None)
+        self._worker.join(timeout=10)
+
+
 WELCOME_TEXT = (
     "<b>ЖОСТКИЙ ЧЕЧЕНСКИЙ ГЕНЕРАТОР ГМД</b>\n\n"
     "/genderd - сгенерировать Дерда\n"
     "/genrom - сгенерировать Ромикса Татара\n"
-    "/gennel - сгенерировать Диму Нелиса\n\n"
+    "/gennel - сгенерировать Диму Нелиса\n"
+    "/gentim - сгенерировать Тимура Бабаева\n\n"
     "Команды работают и в личке, и в группах"
 )
 
@@ -242,17 +434,23 @@ def handle_message(
     api: TelegramAPI,
     message: dict[str, Any],
     bot_username: str,
+    generation_queue: GenerationQueue | None = None,
 ) -> None:
     text = message.get("text")
     if not isinstance(text, str):
         return
     command = parse_command(text, bot_username)
-    if command == "genderd":
-        send_character(api, message, "derd")
-    elif command == "genrom":
-        send_character(api, message, "romix")
-    elif command == "gennel":
-        send_character(api, message, "nelis")
+    character = {
+        "genderd": "derd",
+        "genrom": "romix",
+        "gennel": "nelis",
+        "gentim": "timur",
+    }.get(command)
+    if character is not None:
+        if generation_queue is None:
+            send_character(api, message, character)
+        else:
+            generation_queue.enqueue(message, character)
     elif command in {"start", "help"}:
         send_text(api, message, WELCOME_TEXT)
 
@@ -277,6 +475,10 @@ def configure_bot(api: TelegramAPI) -> None:
                         "command": "gennel",
                         "description": "Сгенерировать Диму Нелиса",
                     },
+                    {
+                        "command": "gentim",
+                        "description": "Сгенерировать Тимура Бабаева",
+                    },
                     {"command": "help", "description": "Как пользоваться ботом"},
                 ]
             },
@@ -286,14 +488,14 @@ def configure_bot(api: TelegramAPI) -> None:
             "setMyDescription",
             {
                 "description": (
-                    "Три огромных генератора: Дерд, Ромикс Татар и Дима Нелис. "
-                    "Случайные имена и HEX-цвета"
+                    "Четыре огромных рофл-генератора: Дерд, Ромикс Татар, "
+                    "Дима Нелис и Тимур Бабаев"
                 )
             },
         ),
         (
             "setMyShortDescription",
-            {"short_description": "Три персонажа, случайные имена и HEX-цвета"},
+            {"short_description": "Четыре персонажа и случайные имена"},
         ),
     )
     for method, data in operations:
@@ -324,6 +526,28 @@ def run() -> None:
     api.call("deleteWebhook", {"drop_pending_updates": False})
     configure_bot(api)
 
+    counter_path = Path(
+        os.environ.get(
+            "GENERATION_COUNTER_FILE",
+            str(ROOT / "generation_counter.txt"),
+        )
+    )
+    generation_counter = GenerationCounter(counter_path)
+    log_channel = os.environ.get("LOG_CHANNEL", "@GMDGenerator").strip()
+    try:
+        max_pending = max(1, int(os.environ.get("MAX_GENERATION_QUEUE", "50")))
+    except ValueError:
+        logging.warning("Invalid MAX_GENERATION_QUEUE; using 50")
+        max_pending = 50
+    generation_queue = GenerationQueue(
+        api,
+        generation_counter,
+        log_channel,
+        max_pending=max_pending,
+    )
+    logging.info("Generation log channel: %s", log_channel)
+    logging.info("Generation counter file: %s", counter_path)
+
     logging.info("%s started as @%s", APP_TITLE, bot_username)
     logging.info(
         "Derd name space: %s",
@@ -336,6 +560,10 @@ def run() -> None:
     logging.info(
         "Nelis combinations: %s",
         f"{nelis_combination_count():,}".replace(",", " "),
+    )
+    logging.info(
+        "Babaev combinations: %s",
+        f"{timur_combination_count():,}".replace(",", " "),
     )
 
     offset: int | None = None
@@ -358,7 +586,7 @@ def run() -> None:
                 if not isinstance(message, dict):
                     continue
                 try:
-                    handle_message(api, message, bot_username)
+                    handle_message(api, message, bot_username, generation_queue)
                 except Exception:
                     logging.exception("Failed to handle update %s", update["update_id"])
         except TelegramAPIError as exc:
@@ -366,6 +594,8 @@ def run() -> None:
                 logging.warning("Polling error: %s; retry in %.0f sec", exc, retry_delay)
                 time.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 30.0)
+
+    generation_queue.shutdown()
 
 
 def main() -> None:

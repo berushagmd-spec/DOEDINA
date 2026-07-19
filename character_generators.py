@@ -404,6 +404,7 @@ SLAVIC_GIVEN_NAMES = _lines(
     Степан
     Тарас
     Тимофей
+    Тимур
     Тихон
     Фёдор
     Филипп
@@ -572,6 +573,77 @@ NELIS_CURATED = _lines(
 )
 
 
+BABAEV_CURATED = _lines(
+    """
+    Бабаев
+    Абаев
+    Авдеев
+    Агеев
+    Алексеев
+    Андреев
+    Арсеньев
+    Афанасьев
+    Беляев
+    Валуев
+    Васильев
+    Гордеев
+    Григорьев
+    Гуляев
+    Дмитриев
+    Дорофеев
+    Евсеев
+    Елисеев
+    Еремеев
+    Зиновьев
+    Игнатьев
+    Исаев
+    Кондратьев
+    Корнеев
+    Лазарев
+    Леонтьев
+    Матвеев
+    Медведев
+    Михеев
+    Моисеев
+    Мусаев
+    Николаев
+    Панаев
+    Пантелеев
+    Савельев
+    Сергеев
+    Тимофеев
+    Фадеев
+    Федосеев
+    Юрьев
+    Яковлев
+    Алиев
+    Магомедалиев
+    Зурабиев
+    Дудаев
+    Басаев
+    Мамаев
+    Сагаев
+    Токаев
+    Жумаев
+    Бердыев
+    Мирзоев
+    Ахмедиев
+    Керимиев
+    Абдуллаев
+    Расулаев
+    Халилев
+    Кефирев
+    Йогуртев
+    Рофлев
+    Кубев
+    Мемев
+    Дердев
+    Ромиксев
+    Нелисев
+    """
+)
+
+
 def _clean(value: str) -> str:
     value = value.lower().replace("ъ", "").replace("ьы", "ы")
     return _TRIPLE_LETTERS.sub(r"\1\1", value)
@@ -639,6 +711,20 @@ def generate_nelis(rng: RandomLike | None = None) -> tuple[str, str]:
     return given_name, surname
 
 
+def generate_timur(rng: RandomLike | None = None) -> tuple[str, str]:
+    """Return a random given name and a generated surname ending in -ев."""
+
+    rng = rng or _SYSTEM_RANDOM
+    pool = rng.choices(
+        (SLAVIC_GIVEN_NAMES, WORLD_GIVEN_NAMES),
+        weights=(72, 28),
+        k=1,
+    )[0]
+    given_name = rng.choice(pool)
+    surname = _procedural_ending_name("ев", BABAEV_CURATED, rng)
+    return given_name, surname
+
+
 def romix_combination_count() -> int:
     procedural_names = (
         len(ROMIX_CURATED)
@@ -657,8 +743,18 @@ def nelis_combination_count() -> int:
     return (len(SLAVIC_GIVEN_NAMES) + len(WORLD_GIVEN_NAMES)) * procedural_surnames
 
 
+def timur_combination_count() -> int:
+    procedural_surnames = (
+        len(BABAEV_CURATED)
+        + len(ONSETS) * len(NUCLEI)
+        + len(ONSETS) * len(NUCLEI) * len(BRIDGES) * len(NUCLEI)
+    )
+    return (len(SLAVIC_GIVEN_NAMES) + len(WORLD_GIVEN_NAMES)) * procedural_surnames
+
+
 if __name__ == "__main__":
     print(f"Ромикс-комбинаций: {romix_combination_count():,}".replace(",", " "))
     print(f"Нелис-комбинаций: {nelis_combination_count():,}".replace(",", " "))
+    print(f"Бабаев-комбинаций: {timur_combination_count():,}".replace(",", " "))
     for _ in range(10):
-        print(*generate_romix(), "|", *generate_nelis())
+        print(*generate_romix(), "|", *generate_nelis(), "|", *generate_timur())
