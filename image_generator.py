@@ -1,4 +1,4 @@
-"""Fast recoloring of the supplied Geometry Dash cube template."""
+"""Fast HEX recoloring for all three supplied character templates."""
 
 from __future__ import annotations
 
@@ -11,7 +11,12 @@ from pathlib import Path
 from PIL import Image, ImageChops
 
 
-TEMPLATE_PATH = Path(__file__).with_name("cube_template.png")
+ROOT = Path(__file__).resolve().parent
+TEMPLATE_SPECS = {
+    "derd": ("cube_template.png", (254, 0, 0)),
+    "romix": ("romix_template.png", (126, 255, 175)),
+    "nelis": ("nelis_template.png", (18, 134, 255)),
+}
 _HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -27,54 +32,77 @@ def _parse_hex(hex_color: str) -> tuple[int, int, int]:
     return tuple(int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
 
 
-@lru_cache(maxsize=1)
-def _template_parts():
-    """Precompute the red contribution so black and white stay untouched."""
+@lru_cache(maxsize=len(TEMPLATE_SPECS))
+def _template_parts(character: str):
+    """Extract a neutral base and color mask from one character template.
 
-    with Image.open(TEMPLATE_PATH) as source:
+    The math treats colored pixels as a mixture of the template's source color
+    and a neutral gray. This keeps black/white details and soft gradients while
+    mapping the main fill to the exact requested HEX value.
+    """
+
+    try:
+        filename, source_color = TEMPLATE_SPECS[character]
+    except KeyError as exc:
+        raise ValueError(f"Unknown character: {character}") from exc
+
+    with Image.open(ROOT / filename) as source:
         rgb = source.convert("RGB")
 
     red, green, blue = rgb.split()
-    strongest_non_red = ImageChops.lighter(green, blue)
-    red_mask = ImageChops.subtract(red, strongest_non_red)
+    maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    minimum = ImageChops.darker(ImageChops.darker(red, green), blue)
+    chroma = ImageChops.subtract(maximum, minimum)
 
-    # JPEG compression left the large red field at 253-254 instead of 255.
-    # Snap only those near-solid pixels to full strength; the soft glow keeps
-    # its original intensity.
-    red_mask = red_mask.point(lambda value: 255 if value >= 240 else value)
-
-    base_red = ImageChops.subtract(red, red_mask)
-    return base_red, green, blue, red_mask
-
-
-def render_cube(hex_color: str) -> io.BytesIO:
-    """Recolor only red-tinted pixels and return a ready-to-upload PNG."""
-
-    target_red, target_green, target_blue = _parse_hex(hex_color)
-    base_red, base_green, base_blue, mask = _template_parts()
-
-    tint_red = ImageChops.multiply(Image.new("L", mask.size, target_red), mask)
-    tint_green = ImageChops.multiply(Image.new("L", mask.size, target_green), mask)
-    tint_blue = ImageChops.multiply(Image.new("L", mask.size, target_blue), mask)
-
-    result = Image.merge(
-        "RGB",
-        (
-            ImageChops.add(base_red, tint_red),
-            ImageChops.add(base_green, tint_green),
-            ImageChops.add(base_blue, tint_blue),
-        ),
+    source_minimum = min(source_color)
+    source_chroma = max(source_color) - source_minimum
+    mask = chroma.point(
+        lambda value: (
+            0
+            if value < 6
+            else min(255, round(value * 255 / source_chroma))
+        )
     )
 
+    colored_minimum = ImageChops.multiply(
+        Image.new("L", mask.size, source_minimum),
+        mask,
+    )
+    neutral_base = ImageChops.subtract(minimum, colored_minimum)
+    return neutral_base, mask
+
+
+def render_character(character: str, hex_color: str) -> io.BytesIO:
+    """Recolor one character and return a ready-to-upload PNG."""
+
+    target = _parse_hex(hex_color)
+    neutral_base, mask = _template_parts(character)
+
+    channels = tuple(
+        ImageChops.add(
+            neutral_base,
+            ImageChops.multiply(Image.new("L", mask.size, component), mask),
+        )
+        for component in target
+    )
+    result = Image.merge("RGB", channels)
+
     output = io.BytesIO()
-    output.name = "derd.png"
+    output.name = f"{character}.png"
     result.save(output, format="PNG", optimize=True, compress_level=7)
     output.seek(0)
     return output
 
 
+def render_cube(hex_color: str) -> io.BytesIO:
+    """Backward-compatible wrapper for the original Derd generator."""
+
+    return render_character("derd", hex_color)
+
+
 if __name__ == "__main__":
-    color = random_hex()
-    preview = Path(__file__).with_name("preview.png")
-    preview.write_bytes(render_cube(color).getvalue())
-    print(f"Создан {preview.name}: {color}")
+    for character in TEMPLATE_SPECS:
+        color = random_hex()
+        preview = ROOT / f"preview_{character}.png"
+        preview.write_bytes(render_character(character, color).getvalue())
+        print(f"Создан {preview.name}: {color}")

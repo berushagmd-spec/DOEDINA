@@ -20,11 +20,22 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from image_generator import random_hex, render_cube
+from character_generators import (
+    generate_nelis,
+    generate_romix,
+    nelis_combination_count,
+    romix_combination_count,
+)
+from image_generator import random_hex, render_character
 from name_generator import generate_name, raw_combination_count
 
 
 APP_TITLE = "🟥DERD GENERATOR 95🟥"
+CHARACTER_TITLES = {
+    "derd": "🟥DERD GENERATOR 95🟥",
+    "romix": "🟩ROMIX TATAR GENERATOR 95🟩",
+    "nelis": "🟦DIMA NELIS GENERATOR 95🟦",
+}
 ROOT = Path(__file__).resolve().parent
 COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s|$)")
 RUNNING = True
@@ -128,7 +139,7 @@ class TelegramAPI:
 
 
 def parse_command(text: str, bot_username: str) -> str | None:
-    """Parse /generate, /GENERATE and /generate@ThisBot safely."""
+    """Parse a command with optional @ThisBot suffix, case-insensitively."""
 
     match = COMMAND_RE.match(text.strip())
     if not match:
@@ -161,7 +172,11 @@ def send_text(api: TelegramAPI, message: dict[str, Any], text: str) -> None:
     api.call("sendMessage", fields)
 
 
-def send_derd(api: TelegramAPI, message: dict[str, Any]) -> None:
+def send_character(
+    api: TelegramAPI,
+    message: dict[str, Any],
+    character: str,
+) -> None:
     chat_id = message["chat"]["id"]
     action_fields = {
         "chat_id": chat_id,
@@ -173,11 +188,19 @@ def send_derd(api: TelegramAPI, message: dict[str, Any]) -> None:
     except TelegramAPIError:
         logging.debug("Could not send chat action", exc_info=True)
 
-    name = generate_name()
+    if character == "derd":
+        name = generate_name()
+    elif character == "romix":
+        name = " ".join(generate_romix())
+    elif character == "nelis":
+        name = " ".join(generate_nelis())
+    else:
+        raise ValueError(f"Unknown character: {character}")
+
     color = random_hex()
-    photo = render_cube(color).getvalue()
+    photo = render_character(character, color).getvalue()
     caption = (
-        f"<b>{APP_TITLE}</b>\n\n"
+        f"<b>{CHARACTER_TITLES[character]}</b>\n\n"
         f"<b>Имя:</b> {html.escape(name)}\n"
         f"<b>HEX:</b> <code>{color}</code>"
     )
@@ -194,17 +217,26 @@ def send_derd(api: TelegramAPI, message: dict[str, Any]) -> None:
     api.call(
         "sendPhoto",
         fields,
-        files={"photo": ("derd.png", photo, "image/png")},
+        files={"photo": (f"{character}.png", photo, "image/png")},
         timeout=45,
     )
-    logging.info("Generated %s in %s for chat %s", name, color, chat_id)
+    logging.info(
+        "Generated %s (%s) in %s for chat %s",
+        name,
+        character,
+        color,
+        chat_id,
+    )
 
 
 WELCOME_TEXT = (
     f"<b>{APP_TITLE}</b>\n\n"
-    "Генерирую случайного Дерда: новое имя и новый цвет куба каждый раз\n\n"
-    "Команда: /generate\n"
-    "Она работает и в личке, и в группах"
+    "Теперь здесь три генератора персонажей. Каждый создаёт новое имя и "
+    "случайный HEX-цвет:\n\n"
+    "/genderd - сгенерировать Дерда\n"
+    "/genrom - сгенерировать Ромикса Татара\n"
+    "/gennel - сгенерировать Диму Нелиса\n\n"
+    "Команды работают и в личке, и в группах"
 )
 
 
@@ -217,8 +249,12 @@ def handle_message(
     if not isinstance(text, str):
         return
     command = parse_command(text, bot_username)
-    if command == "generate":
-        send_derd(api, message)
+    if command == "genderd":
+        send_character(api, message, "derd")
+    elif command == "genrom":
+        send_character(api, message, "romix")
+    elif command == "gennel":
+        send_character(api, message, "nelis")
     elif command in {"start", "help"}:
         send_text(api, message, WELCOME_TEXT)
 
@@ -232,8 +268,16 @@ def configure_bot(api: TelegramAPI) -> None:
             {
                 "commands": [
                     {
-                        "command": "generate",
+                        "command": "genderd",
                         "description": "Сгенерировать случайного Дерда",
+                    },
+                    {
+                        "command": "genrom",
+                        "description": "Сгенерировать Ромикса Татара",
+                    },
+                    {
+                        "command": "gennel",
+                        "description": "Сгенерировать Диму Нелиса",
                     },
                     {"command": "help", "description": "Как пользоваться ботом"},
                 ]
@@ -244,14 +288,14 @@ def configure_bot(api: TelegramAPI) -> None:
             "setMyDescription",
             {
                 "description": (
-                    "Огромный генератор Дердов. Случайное имя и случайный HEX-цвет "
-                    "куба по команде /generate"
+                    "Три огромных генератора: Дерд, Ромикс Татар и Дима Нелис. "
+                    "Случайные имена и HEX-цвета"
                 )
             },
         ),
         (
             "setMyShortDescription",
-            {"short_description": "Случайные Дерды, имена и HEX-цвета"},
+            {"short_description": "Три персонажа, случайные имена и HEX-цвета"},
         ),
     )
     for method, data in operations:
@@ -284,8 +328,16 @@ def run() -> None:
 
     logging.info("%s started as @%s", APP_TITLE, bot_username)
     logging.info(
-        "Raw procedural name space: %s",
+        "Derd name space: %s",
         f"{raw_combination_count():,}".replace(",", " "),
+    )
+    logging.info(
+        "Romix combinations: %s",
+        f"{romix_combination_count():,}".replace(",", " "),
+    )
+    logging.info(
+        "Nelis combinations: %s",
+        f"{nelis_combination_count():,}".replace(",", " "),
     )
 
     offset: int | None = None
