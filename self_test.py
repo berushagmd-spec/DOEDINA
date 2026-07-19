@@ -104,6 +104,8 @@ class CommandTests(unittest.TestCase):
 
     def test_help_and_menu_use_only_new_commands(self):
         self.assertNotIn("/generate\n", WELCOME_TEXT)
+        self.assertNotIn("Теперь здесь три генератора", WELCOME_TEXT)
+        self.assertIn("ЖОСТКИЙ ЧЕЧЕНСКИЙ ГЕНЕРАТОР ГМД", WELCOME_TEXT)
         for command in ("/genderd", "/genrom", "/gennel"):
             self.assertIn(command, WELCOME_TEXT)
 
