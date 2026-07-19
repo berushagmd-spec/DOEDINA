@@ -15,7 +15,7 @@ from name_generator import generate_name, raw_combination_count
 
 class NameGeneratorTests(unittest.TestCase):
     def test_large_space(self):
-        self.assertGreater(raw_combination_count(), 1_000_000_000)
+        self.assertGreater(raw_combination_count(), 100_000_000_000)
 
     def test_names_are_valid(self):
         rng = random.Random(95)
@@ -23,6 +23,7 @@ class NameGeneratorTests(unittest.TestCase):
         self.assertGreater(len(names), 5_000)
         for name in names:
             self.assertRegex(name, r"^[А-ЯЁ][а-яё]{2,12}$")
+            self.assertTrue(name.casefold().endswith(("ерд", "рд", "ед")))
 
 
 class ImageGeneratorTests(unittest.TestCase):

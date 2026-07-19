@@ -19,12 +19,13 @@ class RandomLike(Protocol):
 
 _SYSTEM_RANDOM = random.SystemRandom()
 
+REQUIRED_ENDINGS = ("ерд", "рд", "ед")
+
 
 CURATED_NAMES = (
     "Дерд", "Доед", "Деед", "Даед", "Дуед", "Диед", "Дёрд", "Дэрд",
     "Дард", "Дорд", "Дурд", "Дырд", "Дирд", "Дюрд", "Дярд", "Деорд",
-    "Диорд", "Дуорд", "Даорд", "Дуард", "Деард", "Дердь", "Дердк",
-    "Дердм", "Дердол", "Дердун", "Дердан", "Дердик", "Дердор", "Дердар",
+    "Диорд", "Дуорд", "Даорд", "Дуард", "Деард",
     "Берд", "Верд", "Герд", "Жерд", "Зерд", "Керд", "Лерд", "Мерд",
     "Нерд", "Перд", "Рерд", "Серд", "Терд", "Ферд", "Херд", "Церд",
     "Черд", "Шерд", "Щерд", "Бард", "Вард", "Гард", "Жард", "Зард",
@@ -42,9 +43,7 @@ CURATED_NAMES = (
     "Шоед", "Щоед", "Блерд", "Влерд", "Глерд", "Дверд", "Зверд",
     "Кверд", "Плерд", "Сверд", "Тверд", "Флерд", "Хверд", "Шверд",
     "Бруед", "Вруед", "Груед", "Друед", "Круед", "Пруед", "Труед",
-    "Фруед", "Хруед", "Шруед", "Куард", "Меор", "Тарг", "Скуед",
-    "Флоорд", "Жаерд", "Прунд", "Веорик", "Тардон", "Бруедар",
-    "Клердун", "Моердак", "Свардик", "Феордан", "Грумдер", "Чаердон",
+    "Фруед", "Хруед", "Шруед", "Куард", "Скуед", "Флоорд", "Жаерд",
 )
 
 
@@ -79,28 +78,6 @@ BRIDGES = (
 )
 
 
-CODAS = (
-    "д", "рд", "ед", "нд", "т", "рт", "н", "р", "к", "м", "с",
-    "з", "ж", "ш", "х", "ц", "ч", "л", "ль", "в", "ф", "б", "п",
-    "г", "ск", "ст", "зд", "кт", "мп", "нт", "рк", "рс", "рм", "рн",
-    "рв", "рг", "рж", "рш", "рх", "рц", "рч", "рдь", "дз", "др",
-    "гр", "кр", "тр", "бд", "вд", "гд", "жд", "зд", "лд", "мд",
-    "сд", "тд", "чд", "шд", "нск", "рст", "рск", "ндр", "рдк",
-)
-
-
-DERD_CORES = (
-    "ер", "о", "ее", "е", "а", "у", "и", "ё", "э", "ю", "я",
-    "ао", "ео", "ио", "уо", "оа", "ое", "уе", "ае", "уа", "еа",
-)
-
-
-DERD_ENDINGS = (
-    "д", "рд", "ед", "дь", "дк", "дм", "дн", "дол", "дун", "дан",
-    "дик", "дор", "дар", "дер", "дон", "док", "др", "дс", "дт",
-)
-
-
 _BLOCKED_FRAGMENTS = (
     "хуй", "хуя", "хуё", "пизд", "ёб", "еба", "бля", "гандон",
     "пидор", "педоф", "ниггер", "жид",
@@ -113,14 +90,14 @@ _ONLY_CYRILLIC = re.compile(r"^[а-яё]+$")
 def raw_combination_count() -> int:
     """Return a conservative count of raw procedural combinations."""
 
-    simple = len(ONSETS) * len(NUCLEI) * len(CODAS)
-    derdish = len(ONSETS) * len(DERD_CORES) * len(DERD_ENDINGS)
+    short = len(ONSETS) * len(REQUIRED_ENDINGS)
+    simple = len(ONSETS) * len(NUCLEI) * len(REQUIRED_ENDINGS)
     double = (
         len(ONSETS)
         * len(NUCLEI)
         * len(BRIDGES)
         * len(NUCLEI)
-        * len(CODAS)
+        * len(REQUIRED_ENDINGS)
     )
     long = (
         len(ONSETS)
@@ -129,9 +106,9 @@ def raw_combination_count() -> int:
         * len(NUCLEI)
         * len(BRIDGES)
         * len(NUCLEI)
-        * len(CODAS)
+        * len(REQUIRED_ENDINGS)
     )
-    return len(CURATED_NAMES) + simple + derdish + double + long
+    return len(CURATED_NAMES) + short + simple + double + long
 
 
 def _smooth(value: str) -> str:
@@ -145,6 +122,7 @@ def _is_allowed(value: str) -> bool:
         3 <= len(value) <= 13
         and _ONLY_CYRILLIC.fullmatch(value) is not None
         and not value.startswith(("ы", "ь", "й"))
+        and value.endswith(REQUIRED_ENDINGS)
         and not any(fragment in value for fragment in _BLOCKED_FRAGMENTS)
     )
 
@@ -160,24 +138,24 @@ def generate_name(rng: RandomLike | None = None) -> str:
 
     for _ in range(100):
         style = rng.choices(
-            ("curated", "derd", "simple", "double", "long"),
-            weights=(18, 30, 25, 22, 5),
+            ("curated", "short", "simple", "double", "long"),
+            weights=(20, 25, 30, 21, 4),
             k=1,
         )[0]
 
         if style == "curated":
             return rng.choice(CURATED_NAMES)
-        if style == "derd":
-            value = rng.choice(ONSETS) + rng.choice(DERD_CORES) + rng.choice(DERD_ENDINGS)
+        if style == "short":
+            value = rng.choice(ONSETS) + rng.choice(REQUIRED_ENDINGS)
         elif style == "simple":
-            value = rng.choice(ONSETS) + rng.choice(NUCLEI) + rng.choice(CODAS)
+            value = rng.choice(ONSETS) + rng.choice(NUCLEI) + rng.choice(REQUIRED_ENDINGS)
         elif style == "double":
             value = (
                 rng.choice(ONSETS)
                 + rng.choice(NUCLEI)
                 + rng.choice(BRIDGES)
                 + rng.choice(NUCLEI)
-                + rng.choice(CODAS)
+                + rng.choice(REQUIRED_ENDINGS)
             )
         else:
             value = (
@@ -187,7 +165,7 @@ def generate_name(rng: RandomLike | None = None) -> str:
                 + rng.choice(NUCLEI)
                 + rng.choice(BRIDGES)
                 + rng.choice(NUCLEI)
-                + rng.choice(CODAS)
+                + rng.choice(REQUIRED_ENDINGS)
             )
 
         value = _smooth(value)
